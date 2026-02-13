@@ -143,64 +143,65 @@ Always validate the workflow in a "Sandbox" or "Lab" organization first. Use a t
 **Do not process hundreds of sites in a single batch immediately.**
 Start with **one** file. Verify the physical results (APs came up, clients connected, maps updated). Then increase to a batch of 5, then 10. Monitor the `migration_process.log` closely for API rate limiting or unexpected timeouts.
 
-### 4. Handling of "Alerting" APs
+### 4. Handling of "Alerting" APs (Strict Default)
 **Current Behavior:**
-By default, the script treats an AP with the status `alerting` exactly the same as `online`.
-- **Logic:** An AP is considered "healthy enough" to be kept or provisioned if it is pingable, even if it has an alert (e.g., "High DNS Latency" or "Power Supply Low").
-- **Risk:** If the alert is critical (e.g., "Configuration out of sync"), the script proceeds anyway, which could lead to a failed migration or an AP stuck in a bad state.
+By default, the script enforces a **Strict Health Check**.
+- **Logic:** Any AP involved in a `Keep`, `Add`, or `Replace` operation must be **100% `online`** (Green status).
+- **Consequence:** If an AP is `alerting` (Orange status—e.g., "Power Supply Low" or "High DNS Latency"), the file **will fail validation** and move to `Manual handling`. This ensures you do not migrate a network that is already in a degraded state.
 
----
-
-## 🛠 Modifying "Alerting" Logic
-If you require strict validation where **only** 100% healthy (`online`) APs are processed, and any `alerting` AP causes the file to fail validation, modify the code as follows.
-
-### Location in Code
-This logic is found inside the `process_file_validation` function, specifically within the **Step 7: Verify Device Statuses** block (approx. lines 550-580).
-
-### Current Code (Permissive)
-Currently, the code allows `alerting` status to pass validation:
-
+**The Code Enforcing Strict Mode:**
 ```python
 # ... inside process_file_validation ...
 
+        for idx, row in df.iterrows():
+            d = row['Decision']
+            old_sn = str(row['Serial number']) if pd.notna(row['Serial number']) else None
+            new_sn = str(row['New Serialnumber']) if pd.notna(row['New Serialnumber']) else None
+
             if new_sn:
-                # ... (omitted code)
+                # ... (inventory checks) ...
                 st = status_map.get(new_sn, 'unknown')
-                # ALLOWS 'online' OR 'alerting'
-                if st not in ["online","alerting"]: 
+                
+                # STRICT CHECK: Only 'online' is allowed
+                if st not in ["online"]: 
                     logging.error(f"{filename}: New Serial {new_sn} status {st} invalid.")
                     return False, None, None
 
             if old_sn:
                 st = status_map.get(old_sn, 'unknown')
                 if d in ["Replace", "Remove"] and st not in ["offline", "dormant"]:
-                    # ... (omitted code)
-                # ALLOWS 'online' OR 'alerting' FOR KEPT DEVICES
-                elif d in ["Keep", "Keep/Relocate"] and st not in ["online","alerting"]:
+                    logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
+                    return False, None, None
+                
+                # STRICT CHECK: Only 'online' is allowed for kept devices
+                elif d in ["Keep", "Keep/Relocate"] and st not in ["online"]:
                     logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
                     return False, None, None
 ```
 
-### Recommended Modification (Strict)
-Change the conditions to strictly check for `"online"`. This will cause the file to fail validation and move to **Manual handling** if any relevant AP is alerting.
+---
 
-```python
-# ... inside process_file_validation ...
+## 🛠 Option: How to Allow "Alerting" APs
+If your environment frequently has minor alerts (e.g., specific traffic shaping warnings) and you wish to proceed with migration despite them, you can **relax the validation logic**.
 
-            if new_sn:
-                # ... (omitted code)
-                st = status_map.get(new_sn, 'unknown')
-                # CHANGE: Strict check for 'online' only
-                if st != "online": 
-                    logging.error(f"{filename}: New Serial {new_sn} status is '{st}' (Strict check: Must be 'online').")
-                    return False, None, None
+**To allow `alerting` APs, modify the two lines in `file_check_and_ap_replacement.py` as shown below:**
 
-            if old_sn:
-                st = status_map.get(old_sn, 'unknown')
-                if d in ["Replace", "Remove"] and st not in ["offline", "dormant"]:
-                    # ... (omitted code)
-                # CHANGE: Strict check for 'online' only
-                elif d in ["Keep", "Keep/Relocate"] and st != "online":
-                    logging.error(f"{filename}: Serial {old_sn} status is '{st}' (Strict check: Must be 'online').")
-                    return False, None, None
-```
+1.  **Find this line (New APs):**
+    ```python
+    if st not in ["online"]:
+    ```
+    **Change to:**
+    ```python
+    if st not in ["online", "alerting"]:
+    ```
+
+2.  **Find this line (Existing APs):**
+    ```python
+    elif d in ["Keep", "Keep/Relocate"] and st not in ["online"]:
+    ```
+    **Change to:**
+    ```python
+    elif d in ["Keep", "Keep/Relocate"] and st not in ["online", "alerting"]:
+    ```
+
+---
