@@ -6,6 +6,7 @@ import logging
 import sys
 import re
 import time
+import unicodedata
 from datetime import datetime
 
 
@@ -48,19 +49,50 @@ VALID_DECISIONS = ["Replace", "Remove", "Keep", "Keep/Relocate", "Add"]
 VALID_LOCATIONS = ["Workshop", "Showroom", "Outdoors"]
 NEW_AP_TAG = "NEW-AP"
 
+# --- CUSTOM LOGGING FORMATTER ---
+class AsciiSafeFormatter(logging.Formatter):
+    """
+    Custom logging formatter that automatically normalizes text 
+    (converts 'é' to 'e') and removes unsupported characters 
+    to prevent Windows console crashes.
+    """
+    def format(self, record):
+        # 1. Format the message normally (adds timestamp, level, etc.)
+        original_msg = super().format(record)
+        
+        # 2. Normalize Unicode (NFD form separates 'é' into 'e' + '´')
+        nfkd_form = unicodedata.normalize('NFD', original_msg)
+        
+        # 3. Filter out non-spacing marks (accents) and reconstruct string
+        ascii_text = "".join([c for c in nfkd_form if not unicodedata.category(c).startswith('Mn')])
+        
+        # 4. Remove the specific replacement character that caused your crash
+        clean_msg = ascii_text.replace('\ufffd', '')
+        
+        return clean_msg
+
 # --- LOGGING SETUP ---
 def setup_logging():
-    """Configures logging to both file and console."""
-    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    """Configures logging to both file and console with auto-normalization."""
+    
+    # Use our custom formatter instead of the default logging.Formatter
+    log_formatter = AsciiSafeFormatter('%(asctime)s - %(levelname)s - %(message)s')
+    
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
+    # Clear existing handlers to prevent duplicates if function is called twice
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+
     # File Handler
-    file_handler = logging.FileHandler(PROCESS_LOG_FILE, mode='a')
+    # We still use utf-8 for the file because files support it better than consoles
+    file_handler = logging.FileHandler(PROCESS_LOG_FILE, mode='a', encoding='utf-8')
     file_handler.setFormatter(log_formatter)
     root_logger.addHandler(file_handler)
 
     # Console Handler
+    # The custom formatter ensures only ASCII characters reach the console
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(log_formatter)
     root_logger.addHandler(console_handler)
