@@ -277,28 +277,42 @@ def get_device_statuses(dashboard, org_id, serials):
         return {}
 
 def validate_final_ap_sequence(df):
-    """Checks if the resulting AP numbering (AP01, AP02...) is contiguous."""
-    final_numbers = []
+    """
+    Checks if the resulting AP numbering (AP01, AP02...) contains duplicates.
+    Gaps in the sequence (e.g., 01, 02, 05) are allowed.
+    """
+    seen_numbers = set()
     regex = re.compile(r'AP(\d{2})$')
-    for _, row in df.iterrows():
+    
+    for index, row in df.iterrows():
         decision = str(row['Decision']).strip()
         target_name = ""
+        
+        # Determine the target name based on the decision
         if decision in ["Keep", "Keep/Relocate"]:
             target_name = str(row['Access Point']).strip()
         elif decision in ["Replace", "Add"]:
             target_name = str(row['New Access Point Name']).strip()
         elif decision == "Remove":
             continue 
+        
+        # Extract the AP number (e.g., '01' from 'AP01')
         match = regex.search(target_name)
         if match:
-            final_numbers.append(int(match.group(1)))
+            ap_num = match.group(1)
+            
+            # Check for duplicates
+            if ap_num in seen_numbers:
+                return False, f"Duplicate AP number found: AP{ap_num} (Check row {index + 2})"
+            
+            seen_numbers.add(ap_num)
     
-    if not final_numbers: return False, "No APs found in final configuration."
-    final_numbers.sort()
-    expected_sequence = list(range(1, len(final_numbers) + 1))
-    if final_numbers != expected_sequence:
-        return False, f"Sequence Gap. Found: {final_numbers}. Expected: {expected_sequence}"
-    return True, "Sequence OK"
+    if not seen_numbers:
+        return False, "No APs found in final configuration."
+    
+    # If we reached here, there are no duplicates. 
+    # We no longer compare against a range, so gaps are perfectly fine.
+    return True, f"Validation OK: {len(seen_numbers)} unique APs identified (Gaps allowed)."
 
 def sanitize_network_name(name):
     """Sanitizes network name to comply with Meraki API constraints."""
@@ -722,9 +736,15 @@ def process_file_validation(file_path, retailer_db, global_inv, dashboard):
                 if d in ["Replace", "Remove"] and st not in ["offline", "dormant"]:
                     logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
                     return False, None, None
-                elif d in ["Keep", "Keep/Relocate"] and st not in ["online","alerting"]:
-                    logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
-                    return False, None, None
+                elif d in ["Keep", "Keep/Relocate"]:
+                    if st in ["online", "alerting"]:
+                        pass # This is the ideal state
+                    elif st in ["offline", "dormant"]:
+                        logging.warning(f"{filename} Row {idx}: WARNING - Decision is '{d}' for Serial {old_sn}, but device status is '{st}'")
+                    else:
+                        # Fail if status is 'unknown' or anything else
+                        logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
+                        return False, None, None
 
         # Get Network Metadata
         try:

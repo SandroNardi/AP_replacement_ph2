@@ -72,18 +72,20 @@ Before any changes are made, the script runs a **7-Step Validation Process** on 
 - **Comparison**: It compares the live inventory against the serials listed in the Excel file.
 - **Rule**: If the live network contains APs that are **not** listed in the Excel file, validation fails. The Excel file must account for every device in the network (even if the decision is just "Keep").
 
-### 6. Device Status Validation
-- **Replace/Remove**: The *Old* AP is checked. It generally expects the device to be `offline` or `dormant` before removal to prevent service interruption.
-- **Add/New**: The *New* AP is checked. It must be `online` or `alerting` (plugged in) to be successfully provisioned and renamed.
+### 6. Device Status Validation (Relaxed Mode)
+The script checks the real-time status of devices to prevent errors, but allows for flexibility to handle real-world scenarios:
+
+*   **New APs (Add/Replace)**: Must be `online` or `alerting`.
+*   **Old APs (Replace/Remove)**: Must be `offline` or `dormant` (Strict).
+*   **Old APs (Keep/Relocate)**:
+    *   If `online` or `alerting`: **Pass**.
+    *   If `offline` or `dormant`: **Pass with Warning**. The script will log a yellow warning in `migration_process.log` advising the user to verify the hardware exists, but it will **not** stop the migration.
 
 ### 7. Final State Sequence Validation
-- **Logic**: The script calculates what the network will look like **after** the migration to ensure the AP numbering is contiguous (e.g., AP01, AP02, AP03...).
-- **Data Sources**: It extracts the AP number based on the **Decision**:
-  - **Keep / Keep/Relocate**: It reads the existing `Access Point` column (e.g., extracting "01" from "Old-Name-AP01").
-  - **Replace / Add**: It reads the `New Access Point Name` column (e.g., extracting "02" from "New-Name-AP02").
-  - **Remove**: These rows are ignored as they won't exist in the final network.
-- **Rule**: It collects all resulting numbers, sorts them, and checks for gaps.
-  - *Example Failure*: If the file keeps `AP01` and adds `AP03`, but removes `AP02`, the validation fails because the final sequence `[1, 3]` has a gap.
+*   **Logic**: The script calculates what the network will look like **after** the migration to ensure AP numbering is valid.
+*   **Rule**: It checks for **Duplicates only**.
+    *   *Pass*: `AP01`, `AP03`, `AP05` (Gaps in the sequence are now **allowed**).
+    *   *Fail*: `AP01`, `AP01` (Duplicate numbers are **forbidden**).
 
 ---
 
@@ -143,65 +145,41 @@ Always validate the workflow in a "Sandbox" or "Lab" organization first. Use a t
 **Do not process hundreds of sites in a single batch immediately.**
 Start with **one** file. Verify the physical results (APs came up, clients connected, maps updated). Then increase to a batch of 5, then 10. Monitor the `migration_process.log` closely for API rate limiting or unexpected timeouts.
 
-### 4. Handling of "Alerting" APs (Strict Default)
+### 4. Handling of Device Status & Health Checks (Relaxed Mode)
 **Current Behavior:**
-By default, the script enforces a **Strict Health Check**.
-- **Logic:** Any AP involved in a `Keep`, `Add`, or `Replace` operation must be **100% `online`** (Green status).
-- **Consequence:** If an AP is `alerting` (Orange status—e.g., "Power Supply Low" or "High DNS Latency"), the file **will fail validation** and move to `Manual handling`. This ensures you do not migrate a network that is already in a degraded state.
+The script is configured to be **tolerant of minor network issues** to ensure migrations can proceed in real-world conditions.
 
-**The Code Enforcing Strict Mode:**
+- **"Alerting" APs (Orange Status):**
+  - **Logic:** Operations involving `Keep`, `Add`, or `Replace` are **permitted** if the device is `online` OR `alerting`.
+  - **Reasoning:** This ensures that minor warnings (e.g., "High DNS Latency", "Power Supply Low", or "Traffic Shaping") do not block an otherwise valid migration.
+
+- **"Offline" APs (Red/Gray Status):**
+  - **Logic:** If you decide to `Keep` or `Relocate` an AP that is currently `offline` or `dormant`, the script will **NOT** fail validation.
+  - **Consequence:** Instead of stopping, it will generate a **WARNING** in the log file (`migration_process.log`). This allows the migration to finish, but flags the device for you to check physically later.
+
+**The Code Enforcing Relaxed Mode:**
 ```python
 # ... inside process_file_validation ...
 
-        for idx, row in df.iterrows():
-            d = row['Decision']
-            old_sn = str(row['Serial number']) if pd.notna(row['Serial number']) else None
-            new_sn = str(row['New Serialnumber']) if pd.notna(row['New Serialnumber']) else None
+        if new_sn:
+            # ...
+            st = status_map.get(new_sn, 'unknown')
+            # RELAXED CHECK: Allows 'online' AND 'alerting'
+            if st not in ["online","alerting"]: 
+                logging.error(f"{filename}: New Serial {new_sn} status {st} invalid.")
+                return False, None, None
 
-            if new_sn:
-                # ... (inventory checks) ...
-                st = status_map.get(new_sn, 'unknown')
-                
-                # STRICT CHECK: Only 'online' is allowed
-                if st not in ["online"]: 
-                    logging.error(f"{filename}: New Serial {new_sn} status {st} invalid.")
-                    return False, None, None
-
-            if old_sn:
-                st = status_map.get(old_sn, 'unknown')
-                if d in ["Replace", "Remove"] and st not in ["offline", "dormant"]:
-                    logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
-                    return False, None, None
-                
-                # STRICT CHECK: Only 'online' is allowed for kept devices
-                elif d in ["Keep", "Keep/Relocate"] and st not in ["online"]:
+        if old_sn:
+            # ...
+            elif d in ["Keep", "Keep/Relocate"]:
+                if st in ["online", "alerting"]:
+                    pass # Ideal state
+                elif st in ["offline", "dormant"]:
+                    # WARNING ONLY: Does not stop execution
+                    logging.warning(f"{filename} Row {idx}: WARNING - Decision is '{d}' for Serial {old_sn}, but device status is '{st}'")
+                else:
+                    # Fail if status is 'unknown'
                     logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
                     return False, None, None
 ```
-
----
-
-## 🛠 Option: How to Allow "Alerting" APs
-If your environment frequently has minor alerts (e.g., specific traffic shaping warnings) and you wish to proceed with migration despite them, you can **relax the validation logic**.
-
-**To allow `alerting` APs, modify the two lines in `file_check_and_ap_replacement.py` as shown below:**
-
-1.  **Find this line (New APs):**
-    ```python
-    if st not in ["online"]:
-    ```
-    **Change to:**
-    ```python
-    if st not in ["online", "alerting"]:
-    ```
-
-2.  **Find this line (Existing APs):**
-    ```python
-    elif d in ["Keep", "Keep/Relocate"] and st not in ["online"]:
-    ```
-    **Change to:**
-    ```python
-    elif d in ["Keep", "Keep/Relocate"] and st not in ["online", "alerting"]:
-    ```
-
 ---
