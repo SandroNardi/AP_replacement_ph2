@@ -735,11 +735,6 @@ def process_file_validation(file_path, retailer_db, global_inv, dashboard):
                     # Fail if status is 'unknown' or anything else
                     logging.error(f"{filename}: New Serial {new_sn} status {st} invalid.")
                     return False, None, None
-                
-                
-                if st not in ["online","alerting"]: 
-                    logging.error(f"{filename}: New Serial {new_sn} status {st} invalid.")
-                    return False, None, None
 
             if old_sn:
                 st = status_map.get(old_sn, 'unknown')
