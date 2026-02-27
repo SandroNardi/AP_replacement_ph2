@@ -727,6 +727,16 @@ def process_file_validation(file_path, retailer_db, global_inv, dashboard):
                     logging.error(f"{filename}: New Serial {new_sn} missing {NEW_AP_TAG}.")
                     return False, None, None
                 st = status_map.get(new_sn, 'unknown')
+                if st in ["online"]:
+                        pass # This is the ideal state
+                elif st in ["alerting"]:
+                    logging.warning(f"{filename} Row {idx}: WARNING - Serial {new_sn} device status is '{st}'")
+                else:
+                    # Fail if status is 'unknown' or anything else
+                    logging.error(f"{filename}: New Serial {new_sn} status {st} invalid.")
+                    return False, None, None
+                
+                
                 if st not in ["online","alerting"]: 
                     logging.error(f"{filename}: New Serial {new_sn} status {st} invalid.")
                     return False, None, None
@@ -737,9 +747,9 @@ def process_file_validation(file_path, retailer_db, global_inv, dashboard):
                     logging.error(f"{filename}: Serial {old_sn} status {st} invalid for {d}.")
                     return False, None, None
                 elif d in ["Keep", "Keep/Relocate"]:
-                    if st in ["online", "alerting"]:
+                    if st in ["online"]:
                         pass # This is the ideal state
-                    elif st in ["offline", "dormant"]:
+                    elif st in ["offline", "dormant","alerting"]:
                         logging.warning(f"{filename} Row {idx}: WARNING - Decision is '{d}' for Serial {old_sn}, but device status is '{st}'")
                     else:
                         # Fail if status is 'unknown' or anything else

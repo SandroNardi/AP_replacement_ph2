@@ -75,7 +75,9 @@ Before any changes are made, the script runs a **7-Step Validation Process** on 
 ### 6. Device Status Validation (Relaxed Mode)
 The script checks the real-time status of devices to prevent errors, but allows for flexibility to handle real-world scenarios:
 
-*   **New APs (Add/Replace)**: Must be `online` or `alerting`.
+*   **New APs (Add/Replace)**:
+    *   If `online`: **Pass**.
+    *   If `alerting`: **Pass with Warning**. The script will log a yellow warning in `migration_process.log` advising the user to verify the hardware exists, but it will **not** stop the migration.
 *   **Old APs (Replace/Remove)**: Must be `offline` or `dormant` (Strict).
 *   **Old APs (Keep/Relocate)**:
     *   If `online` or `alerting`: **Pass**.
